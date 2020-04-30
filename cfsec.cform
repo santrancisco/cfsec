@@ -1,0 +1,559 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: AWS CloudTrail API Activity Alarm Template for CloudWatch Logs
+Parameters:
+  ## AlarmMetric depends on this
+  AlarmMetricLogGroupName:
+    Type: String
+    Default: ""
+    Description: >-
+      Enter CloudWatch Logs log group name. Usually the default is
+      CloudTrail/DefaultLogGroup. Note that leaving this blank will skip deployment of AlarmMetric
+  ## Alarm Lambda function depends on these
+  AlarmLambdaBucketName:
+    Type: String
+    Default: cfsec
+    Description: The bucket name where the lambda code is reside in
+  AlarmLambdaBucketKey:
+    Type: String
+    Default: assets/snstoslack.zip
+    Description: The path to the lambda code
+  AlarmLambdaFunctionName:
+    Type: String
+    Default: SnsToSlack
+    Description: The name of the function
+  AlarmSlackWebhook:
+    Type: String
+    Description: The Slack webhook used by lambda function to notify users
+  AlarmSnsTopicName:
+    Type: String
+    Default: CFSEC_Alarm_SNSTopic
+    Description: The aws topic which AWS alarms fire to
+  ## Honey Host creation depends on these
+  HoneyHostSshKeyName:
+    Type: String
+    Default: ""
+    Description: Name of ssh key you want to use to manage honeyhost.
+  HoneyHostVpcId:
+    Type: String
+    Default: ""
+    Description: VpcId where Honey Host should be installed to.
+  HoneyHostSubnetId:
+    Type: String
+    Default: ""
+    Description: SubnetId where Honey Host should be installed to.
+  HoneyHostPorts:
+    Type: String
+    Default: "80,443,23,21,8080"
+    Description: List of ports we should use knockd to alert on.
+  HoneyHostAmi:
+    Type: String
+    Default: ami-085925f297f89fce1
+    Description: We should use the latest Ubuntu 18.04 LTS ami.
+Conditions:
+  CreateAlarmLambda: !And
+    - !Not [!Equals ['', !Ref AlarmLambdaBucketName]]
+    - !Not [!Equals ['', !Ref AlarmLambdaBucketKey]]
+    - !Not [!Equals ['', !Ref AlarmSlackWebhook]]
+  CreateAlarmMetric: !Not 
+    - !Equals ['', !Ref AlarmMetricLogGroupName]
+  CreateHoneyHost: !And
+    - !Not [ !Equals ['', !Ref HoneyHostVpcId] ]
+    - !Not [ !Equals ['', !Ref HoneyHostSubnetId] ]
+    - !Not [!Equals ['', !Ref AlarmSlackWebhook]]
+  CreateHoneyHostWithKey: !Not
+    - !Equals ['', !Ref HoneyHostSshKeyName]
+
+Resources:
+  AlarmMetricSecurityGroupChangesFilter:
+    Condition: CreateAlarmMetric
+    Type: 'AWS::Logs::MetricFilter'
+    Properties:
+      AlarmMetricLogGroupName: !Ref AlarmMetricLogGroupName
+      FilterPattern: >-
+        { ($.eventName = AuthorizeSecurityGroupIngress) || ($.eventName =
+        AuthorizeSecurityGroupEgress) || ($.eventName =
+        RevokeSecurityGroupIngress) || ($.eventName = RevokeSecurityGroupEgress)
+        || ($.eventName = CreateSecurityGroup) || ($.eventName =
+        DeleteSecurityGroup) }
+      MetricTransformations:
+        - MetricNamespace: CloudTrailMetrics
+          MetricName: SecurityGroupEventCount
+          MetricValue: '1'
+  AlarmMetricSecurityGroupChangesAlarm:
+    Condition: CreateAlarmMetric
+    Type: 'AWS::CloudWatch::Alarm'
+    Properties:
+      AlarmName: CloudTrailSecurityGroupChanges
+      AlarmDescription: >-
+        Alarms when an API call is made to create, update or delete a Security
+        Group.
+      AlarmActions:
+        - !Ref AlarmSnsTopic
+      MetricName: SecurityGroupEventCount
+      Namespace: CloudTrailMetrics
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      EvaluationPeriods: '1'
+      Period: '300'
+      Statistic: Sum
+      Threshold: '1'
+  AlarmMetricNetworkAclChangesFilter:
+    Condition: CreateAlarmMetric
+    Type: 'AWS::Logs::MetricFilter'
+    Properties:
+      AlarmMetricLogGroupName: !Ref AlarmMetricLogGroupName
+      FilterPattern: >-
+        { ($.eventName = CreateNetworkAcl) || ($.eventName =
+        CreateNetworkAclEntry) || ($.eventName = DeleteNetworkAcl) ||
+        ($.eventName = DeleteNetworkAclEntry) || ($.eventName =
+        ReplaceNetworkAclEntry) || ($.eventName = ReplaceNetworkAclAssociation)
+        }
+      MetricTransformations:
+        - MetricNamespace: CloudTrailMetrics
+          MetricName: NetworkAclEventCount
+          MetricValue: '1'
+  AlarmMetricNetworkAclChangesAlarm:
+    Condition: CreateAlarmMetric
+    Type: 'AWS::CloudWatch::Alarm'
+    Properties:
+      AlarmName: CloudTrailNetworkAclChanges
+      AlarmDescription: >-
+        Alarms when an API call is made to create, update or delete a Network
+        ACL.
+      AlarmActions:
+        - !Ref AlarmSnsTopic
+      MetricName: NetworkAclEventCount
+      Namespace: CloudTrailMetrics
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      EvaluationPeriods: '1'
+      Period: '300'
+      Statistic: Sum
+      Threshold: '1'
+  AlarmMetricGatewayChangesFilter:
+    Condition: CreateAlarmMetric
+    Type: 'AWS::Logs::MetricFilter'
+    Properties:
+      AlarmMetricLogGroupName: !Ref AlarmMetricLogGroupName
+      FilterPattern: >-
+        { ($.eventName = CreateCustomerGateway) || ($.eventName =
+        DeleteCustomerGateway) || ($.eventName = AttachInternetGateway) ||
+        ($.eventName = CreateInternetGateway) || ($.eventName =
+        DeleteInternetGateway) || ($.eventName = DetachInternetGateway) }
+      MetricTransformations:
+        - MetricNamespace: CloudTrailMetrics
+          MetricName: GatewayEventCount
+          MetricValue: '1'
+  AlarmMetricGatewayChangesAlarm:
+    Condition: CreateAlarmMetric
+    Type: 'AWS::CloudWatch::Alarm'
+    Properties:
+      AlarmName: CloudTrailGatewayChanges
+      AlarmDescription: >-
+        Alarms when an API call is made to create, update or delete a Customer
+        or Internet Gateway.
+      AlarmActions:
+        - !Ref AlarmSnsTopic
+      MetricName: GatewayEventCount
+      Namespace: CloudTrailMetrics
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      EvaluationPeriods: '1'
+      Period: '300'
+      Statistic: Sum
+      Threshold: '1'
+  AlarmMetricVpcChangesFilter:
+    Condition: CreateAlarmMetric
+    Type: 'AWS::Logs::MetricFilter'
+    Properties:
+      AlarmMetricLogGroupName: !Ref AlarmMetricLogGroupName
+      FilterPattern: >-
+        { ($.eventName = CreateVpc) || ($.eventName = DeleteVpc) || ($.eventName
+        = ModifyVpcAttribute) || ($.eventName = AcceptVpcPeeringConnection) ||
+        ($.eventName = CreateVpcPeeringConnection) || ($.eventName =
+        DeleteVpcPeeringConnection) || ($.eventName =
+        RejectVpcPeeringConnection) || ($.eventName = AttachClassicLinkVpc) ||
+        ($.eventName = DetachClassicLinkVpc) || ($.eventName =
+        DisableVpcClassicLink) || ($.eventName = EnableVpcClassicLink) }
+      MetricTransformations:
+        - MetricNamespace: CloudTrailMetrics
+          MetricName: VpcEventCount
+          MetricValue: '1'
+  AlarmMetricVpcChangesAlarm:
+    Condition: CreateAlarmMetric
+    Type: 'AWS::CloudWatch::Alarm'
+    Properties:
+      AlarmName: CloudTrailVpcChanges
+      AlarmDescription: >-
+        Alarms when an API call is made to create, update or delete a VPC, VPC
+        peering connection or VPC connection to classic.
+      AlarmActions:
+        - !Ref AlarmSnsTopic
+      MetricName: VpcEventCount
+      Namespace: CloudTrailMetrics
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      EvaluationPeriods: '1'
+      Period: '300'
+      Statistic: Sum
+      Threshold: '1'
+  AlarmMetricEC2InstanceChangesFilter:
+    Condition: CreateAlarmMetric
+    Type: 'AWS::Logs::MetricFilter'
+    Properties:
+      AlarmMetricLogGroupName: !Ref AlarmMetricLogGroupName
+      FilterPattern: >-
+        { ($.eventName = RunInstances) || ($.eventName = RebootInstances) ||
+        ($.eventName = StartInstances) || ($.eventName = StopInstances) ||
+        ($.eventName = TerminateInstances) }
+      MetricTransformations:
+        - MetricNamespace: CloudTrailMetrics
+          MetricName: EC2InstanceEventCount
+          MetricValue: '1'
+  AlarmMetricEC2InstanceChangesAlarm:
+    Condition: CreateAlarmMetric
+    Type: 'AWS::CloudWatch::Alarm'
+    Properties:
+      AlarmName: CloudTrailEC2InstanceChanges
+      AlarmDescription: >-
+        Alarms when an API call is made to create, terminate, start, stop or
+        reboot an EC2 instance.
+      AlarmActions:
+        - !Ref AlarmSnsTopic
+      MetricName: EC2InstanceEventCount
+      Namespace: CloudTrailMetrics
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      EvaluationPeriods: '1'
+      Period: '300'
+      Statistic: Sum
+      Threshold: '1'
+  AlarmMetricEC2LargeInstanceChangesFilter:
+    Condition: CreateAlarmMetric
+    Type: 'AWS::Logs::MetricFilter'
+    Properties:
+      AlarmMetricLogGroupName: !Ref AlarmMetricLogGroupName
+      FilterPattern: >-
+        { ($.eventName = RunInstances) && (($.requestParameters.instanceType =
+        *.8xlarge) || ($.requestParameters.instanceType = *.4xlarge)) }
+      MetricTransformations:
+        - MetricNamespace: CloudTrailMetrics
+          MetricName: EC2LargeInstanceEventCount
+          MetricValue: '1'
+  AlarmMetricEC2LargeInstanceChangesAlarm:
+    Condition: CreateAlarmMetric
+    Type: 'AWS::CloudWatch::Alarm'
+    Properties:
+      AlarmName: CloudTrailEC2LargeInstanceChanges
+      AlarmDescription: >-
+        Alarms when an API call is made to create, terminate, start, stop or
+        reboot a 4x or 8x-large EC2 instance.
+      AlarmActions:
+        - !Ref AlarmSnsTopic
+      MetricName: EC2LargeInstanceEventCount
+      Namespace: CloudTrailMetrics
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      EvaluationPeriods: '1'
+      Period: '300'
+      Statistic: Sum
+      Threshold: '1'
+  AlarmMetricCloudTrailChangesFilter:
+    Condition: CreateAlarmMetric
+    Type: 'AWS::Logs::MetricFilter'
+    Properties:
+      AlarmMetricLogGroupName: !Ref AlarmMetricLogGroupName
+      FilterPattern: >-
+        { ($.eventName = CreateTrail) || ($.eventName = UpdateTrail) ||
+        ($.eventName = DeleteTrail) || ($.eventName = StartLogging) ||
+        ($.eventName = StopLogging) }
+      MetricTransformations:
+        - MetricNamespace: CloudTrailMetrics
+          MetricName: CloudTrailEventCount
+          MetricValue: '1'
+  AlarmMetricCloudTrailChangesAlarm:
+    Condition: CreateAlarmMetric
+    Type: 'AWS::CloudWatch::Alarm'
+    Properties:
+      AlarmName: CloudTrailChanges
+      AlarmDescription: >-
+        Alarms when an API call is made to create, update or delete a CloudTrail
+        trail, or to start or stop logging to a trail.
+      AlarmActions:
+        - !Ref AlarmSnsTopic
+      MetricName: CloudTrailEventCount
+      Namespace: CloudTrailMetrics
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      EvaluationPeriods: '1'
+      Period: '300'
+      Statistic: Sum
+      Threshold: '1'
+  AlarmMetricConsoleSignInFailuresFilter:
+    Condition: CreateAlarmMetric
+    Type: 'AWS::Logs::MetricFilter'
+    Properties:
+      AlarmMetricLogGroupName: !Ref AlarmMetricLogGroupName
+      FilterPattern: >-
+        { ($.eventName = ConsoleLogin) && ($.errorMessage = "Failed
+        authentication") }
+      MetricTransformations:
+        - MetricNamespace: CloudTrailMetrics
+          MetricName: ConsoleSignInFailureCount
+          MetricValue: '1'
+  AlarmMetricConsoleSignInFailuresAlarm:
+    Condition: CreateAlarmMetric
+    Type: 'AWS::CloudWatch::Alarm'
+    Properties:
+      AlarmName: CloudTrailConsoleSignInFailures
+      AlarmDescription: >-
+        Alarms when an unauthenticated API call is made to sign into the
+        console.
+      AlarmActions:
+        - !Ref AlarmSnsTopic
+      MetricName: ConsoleSignInFailureCount
+      Namespace: CloudTrailMetrics
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      EvaluationPeriods: '1'
+      Period: '300'
+      Statistic: Sum
+      Threshold: '3'
+  AlarmMetricAuthorizationFailuresFilter:
+    Condition: CreateAlarmMetric
+    Type: 'AWS::Logs::MetricFilter'
+    Properties:
+      AlarmMetricLogGroupName: !Ref AlarmMetricLogGroupName
+      FilterPattern: >-
+        { ($.errorCode = "*UnauthorizedOperation") || ($.errorCode =
+        "AccessDenied*") }
+      MetricTransformations:
+        - MetricNamespace: CloudTrailMetrics
+          MetricName: AuthorizationFailureCount
+          MetricValue: '1'
+  AlarmMetricAuthorizationFailuresAlarm:
+    Condition: CreateAlarmMetric
+    Type: 'AWS::CloudWatch::Alarm'
+    Properties:
+      AlarmName: CloudTrailAuthorizationFailures
+      AlarmDescription: Alarms when an unauthorized API call is made.
+      AlarmActions:
+        - !Ref AlarmSnsTopic
+      MetricName: AuthorizationFailureCount
+      Namespace: CloudTrailMetrics
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      EvaluationPeriods: '1'
+      Period: '300'
+      Statistic: Sum
+      Threshold: '1'
+  AlarmMetricIAMPolicyChangesFilter:
+    Condition: CreateAlarmMetric
+    Type: 'AWS::Logs::MetricFilter'
+    Properties:
+      AlarmMetricLogGroupName: !Ref AlarmMetricLogGroupName
+      FilterPattern: >-
+        {($.eventName=DeleteGroupPolicy)||($.eventName=DeleteRolePolicy)||($.eventName=DeleteUserPolicy)||($.eventName=PutGroupPolicy)||($.eventName=PutRolePolicy)||($.eventName=PutUserPolicy)||($.eventName=CreatePolicy)||($.eventName=DeletePolicy)||($.eventName=CreatePolicyVersion)||($.eventName=DeletePolicyVersion)||($.eventName=AttachRolePolicy)||($.eventName=DetachRolePolicy)||($.eventName=AttachUserPolicy)||($.eventName=DetachUserPolicy)||($.eventName=AttachGroupPolicy)||($.eventName=DetachGroupPolicy)}
+      MetricTransformations:
+        - MetricNamespace: CloudTrailMetrics
+          MetricName: IAMPolicyEventCount
+          MetricValue: '1'
+  AlarmMetricIAMPolicyChangesAlarm:
+    Condition: CreateAlarmMetric
+    Type: 'AWS::CloudWatch::Alarm'
+    Properties:
+      AlarmName: CloudTrailIAMPolicyChanges
+      AlarmDescription: Alarms when an API call is made to change an IAM policy.
+      AlarmActions:
+        - !Ref AlarmSnsTopic
+      MetricName: IAMPolicyEventCount
+      Namespace: CloudTrailMetrics
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      EvaluationPeriods: '1'
+      Period: '300'
+      Statistic: Sum
+      Threshold: '1'
+  
+  AlarmSnsTopic:
+    Type: 'AWS::SNS::Topic'
+    Condition: CreateAlarmLambda
+    Properties:
+      TopicName: !Ref AlarmSnsTopicName
+      Subscription:
+        - Endpoint: !GetAtt 
+            - AlarmLambda
+            - Arn
+          Protocol: lambda
+    DependsOn:
+      - AlarmLambda
+  AlarmLambda:
+    Type: 'AWS::Lambda::Function'
+    Condition: CreateAlarmLambda
+    Properties:
+      FunctionName: !Ref AlarmLambdaFunctionName
+      Code:
+        S3Bucket: !Ref AlarmLambdaBucketName
+        S3Key: !Ref AlarmLambdaBucketKey
+      Description: >-
+        Lamda function used to send notification for AWS alarms. This was
+        created from a cloudformation stack
+      Environment:
+        Variables:
+          SLACK_WEBHOOK: !Ref AlarmSlackWebhook
+      MemorySize: 128
+      Handler: "snstoslack.lambda_handler"
+      Role: !GetAtt 
+        - LambdaExecutionRole
+        - Arn
+      Timeout: 5
+      Runtime: python3.8
+    DependsOn:
+      - LambdaExecutionRole
+  
+  LambdaExecutionRole:
+    Type: 'AWS::IAM::Role'
+    Condition: CreateAlarmLambda
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - 'sts:AssumeRole'
+      Path: /
+      Policies:
+        - PolicyName: log
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'logs:*'
+                Resource: 'arn:aws:logs:*:*:*'
+        - PolicyName: snssubscribe
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'sns:Publish'
+                  - 'sns:Unsubscribe'
+                  - 'sns:Subscribe'
+                  - 'sns:ListSubscriptions'
+                Resource: !Join 
+                  - ''
+                  - - 'arn:aws:sns:'
+                    - !Ref 'AWS::Region'
+                    - ':'
+                    - !Ref 'AWS::AccountId'
+                    - ':'
+                    - !Ref AlarmSnsTopicName
+  LambdaInvokePermission:
+    Type: 'AWS::Lambda::Permission'
+    Condition: CreateAlarmLambda
+    Properties:
+      Action: 'lambda:InvokeFunction'
+      Principal: sns.amazonaws.com
+      SourceArn: !Ref AlarmSnsTopic
+      FunctionName: !GetAtt 
+        - AlarmLambda
+        - Arn
+
+  HoneyHostProfile:
+    Type: "AWS::IAM::Role"
+    Condition: CreateHoneyHost
+    Properties:
+      RoleName: HoneyHostProfile
+      Policies:
+        -
+          PolicyName: "publish-to-alarm-sns-topic"
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              -
+                Effect: "Allow"
+                Action: "SNS:Publish"
+                Resource: !Ref AlarmSnsTopic
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          -
+            Effect: "Allow"
+            Principal:
+              Service:
+                - "ec2.amazonaws.com"
+            Action:
+              - "sts:AssumeRole"
+
+  ## A wild open securitygroup use for HoneyHost to accept traffic from everywhere and alert upon visit.
+  HoneyHostSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Condition: CreateHoneyHost
+    Properties:
+        GroupDescription: Allow http to client host
+        VpcId: !Ref HoneyHostVpcId
+        SecurityGroupIngress:
+        - IpProtocol: -1
+          FromPort: 0
+          ToPort: 65535
+          CidrIp: 0.0.0.0/0
+        SecurityGroupEgress:
+        - IpProtocol: -1
+          FromPort: 0
+          ToPort: 65535
+          CidrIp: 0.0.0.0/0
+
+  HoneyHost: 
+    Type: AWS::EC2::Instance
+    Condition: CreateHoneyHost
+    Properties: 
+      ImageId: !Ref HoneyHostAmi
+      IamInstanceProfile: HoneyHostProfile
+      InstanceType: t2.micro
+      KeyName: !If
+        - CreateHoneyHostWithKey
+        - !Ref HoneyHostSshKeyName
+        - !Ref "AWS::NoValue"
+      SecurityGroupIds: 
+       - !GetAtt HoneyHostSecurityGroup.GroupId
+      SubnetId: !Ref HoneyHostSubnetId
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash -xe
+          apt update
+          apt upgrade
+          apt install -y knockd
+          cat <<EOF >/etc/knockd.conf
+          [options]
+          UseSyslog
+          [445]
+                  sequence    = 445
+                  seq_timeout = 1
+                  command     = aws sns publish --topic-arn "${AlarmSnsTopic}" --message "HoneyHost SMB port 445 was knocked by %IP%"
+                  tcpflags    = syn
+
+          [21]
+                  sequence    = 21
+                  seq_timeout = 1
+                  command     = aws sns publish --topic-arn "${AlarmSnsTopic}" --message "HoneyHost FTP port 21 was knocked by %IP%"
+                  tcpflags    = syn
+
+          [23]
+                  sequence    = 23
+                  seq_timeout = 1
+                  command     = aws sns publish --topic-arn "${AlarmSnsTopic}" --message "HoneyHost Telnet port 23 was knocked by %IP%"
+                  tcpflags    = syn
+
+          [80]
+                  sequence    = 80
+                  seq_timeout = 1
+                  command     = aws sns publish --topic-arn "${AlarmSnsTopic}" --message "HoneyHost HTTP port 80 was knocked by %IP%"
+                  tcpflags    = syn
+          EOF
+
+Outputs:
+  AlarmLambdaArn:
+    Condition: CreateAlarmLambda
+    Description: The ARN of our AlarmLambda function
+    Value: !GetAtt 
+      - AlarmLambda
+      - Arn
+  AlarmSnsTopicArn:
+    Condition: CreateAlarmLambda
+    Description: The arn of the SNS topic which trigger our Lambda function
+    Value: !Ref AlarmSnsTopic
+  
