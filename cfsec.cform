@@ -1,5 +1,7 @@
 AWSTemplateFormatVersion: 2010-09-09
-Description: AWS CloudTrail API Activity Alarm Template for CloudWatch Logs
+Description: CFSEC AWS Cloudformation template
+
+## These are parameters that users fill in at cloudformation web UI upon deploying this stack
 Parameters:
   ## AlarmMetric depends on this
   AlarmMetricLogGroupName:
@@ -49,6 +51,9 @@ Parameters:
     Type: String
     Default: ami-085925f297f89fce1
     Description: We should use the latest Ubuntu 18.04 LTS ami.
+
+# Condition is a fantastic way to make decisions in cloudformation stack
+# I'm using this mostly to decide what resources will be created at launch.
 Conditions:
   CreateAlarmLambda: !And
     - !Not [!Equals ['', !Ref AlarmLambdaBucketName]]
@@ -59,11 +64,11 @@ Conditions:
   CreateHoneyHost: !And
     - !Not [ !Equals ['', !Ref HoneyHostVpcId] ]
     - !Not [ !Equals ['', !Ref HoneyHostSubnetId] ]
-    - !Not [!Equals ['', !Ref AlarmSlackWebhook]]
   CreateHoneyHostWithKey: !Not
     - !Equals ['', !Ref HoneyHostSshKeyName]
 
 Resources:
+## These are the default AlarmMetric comes with the example from AWS!
   AlarmMetricSecurityGroupChangesFilter:
     Condition: CreateAlarmMetric
     Type: 'AWS::Logs::MetricFilter'
@@ -453,11 +458,29 @@ Resources:
         - AlarmLambda
         - Arn
 
-  HoneyHostProfile:
+  ## A wild open securitygroup use for HoneyHost to accept traffic from everywhere and alert upon visit.
+  HoneyHostSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Condition: CreateHoneyHost
+    Properties:
+        GroupDescription: Allow http to client host
+        VpcId: !Ref HoneyHostVpcId
+        SecurityGroupIngress:
+        - IpProtocol: -1
+          FromPort: 0
+          ToPort: 65535
+          CidrIp: 0.0.0.0/0
+        SecurityGroupEgress:
+        - IpProtocol: -1
+          FromPort: 0
+          ToPort: 65535
+          CidrIp: 0.0.0.0/0
+
+  HoneyHostRole:
     Type: "AWS::IAM::Role"
     Condition: CreateHoneyHost
     Properties:
-      RoleName: HoneyHostProfile
+      RoleName: HoneyHostRole
       Policies:
         -
           PolicyName: "publish-to-alarm-sns-topic"
@@ -478,73 +501,65 @@ Resources:
                 - "ec2.amazonaws.com"
             Action:
               - "sts:AssumeRole"
-
-  ## A wild open securitygroup use for HoneyHost to accept traffic from everywhere and alert upon visit.
-  HoneyHostSecurityGroup:
-    Type: AWS::EC2::SecurityGroup
+  # Lesson learnt: You can't reference the role directly in AWS::EC2::Instance Property ... you need this.. duh
+  HoneyHostInstanceProfile:
+    Type: "AWS::IAM::InstanceProfile"
     Condition: CreateHoneyHost
     Properties:
-        GroupDescription: Allow http to client host
-        VpcId: !Ref HoneyHostVpcId
-        SecurityGroupIngress:
-        - IpProtocol: -1
-          FromPort: 0
-          ToPort: 65535
-          CidrIp: 0.0.0.0/0
-        SecurityGroupEgress:
-        - IpProtocol: -1
-          FromPort: 0
-          ToPort: 65535
-          CidrIp: 0.0.0.0/0
-
-  HoneyHost: 
+      Path: "/"
+      Roles:
+        - !Ref HoneyHostRole
+      
+  HoneyHostEC2: 
     Type: AWS::EC2::Instance
     Condition: CreateHoneyHost
     Properties: 
       ImageId: !Ref HoneyHostAmi
-      IamInstanceProfile: HoneyHostProfile
+      IamInstanceProfile: !Ref HoneyHostInstanceProfile
       InstanceType: t2.micro
       KeyName: !If
         - CreateHoneyHostWithKey
         - !Ref HoneyHostSshKeyName
         - !Ref "AWS::NoValue"
       SecurityGroupIds: 
-       - !GetAtt HoneyHostSecurityGroup.GroupId
+        - !GetAtt HoneyHostSecurityGroup.GroupId
       SubnetId: !Ref HoneyHostSubnetId
       UserData:
         Fn::Base64: !Sub |
           #!/bin/bash -xe
           apt update
-          apt upgrade
-          apt install -y knockd
+          apt install -y knockd awscli
           cat <<EOF >/etc/knockd.conf
           [options]
           UseSyslog
           [445]
                   sequence    = 445
                   seq_timeout = 1
-                  command     = aws sns publish --topic-arn "${AlarmSnsTopic}" --message "HoneyHost SMB port 445 was knocked by %IP%"
+                  command     = aws --region ${AWS::Region} sns publish --topic-arn "${AlarmSnsTopic}" --message "HoneyHost SMB port 445 was knocked by %IP%"
                   tcpflags    = syn
 
           [21]
                   sequence    = 21
                   seq_timeout = 1
-                  command     = aws sns publish --topic-arn "${AlarmSnsTopic}" --message "HoneyHost FTP port 21 was knocked by %IP%"
+                  command     = aws --region ${AWS::Region} sns publish --topic-arn "${AlarmSnsTopic}" --message "HoneyHost FTP port 21 was knocked by %IP%"
                   tcpflags    = syn
 
           [23]
                   sequence    = 23
                   seq_timeout = 1
-                  command     = aws sns publish --topic-arn "${AlarmSnsTopic}" --message "HoneyHost Telnet port 23 was knocked by %IP%"
+                  command     = aws --region ${AWS::Region} sns publish --topic-arn "${AlarmSnsTopic}" --message "HoneyHost Telnet port 23 was knocked by %IP%"
                   tcpflags    = syn
 
           [80]
                   sequence    = 80
                   seq_timeout = 1
-                  command     = aws sns publish --topic-arn "${AlarmSnsTopic}" --message "HoneyHost HTTP port 80 was knocked by %IP%"
+                  command     = aws --region ${AWS::Region} sns publish --topic-arn "${AlarmSnsTopic}" --message "HoneyHost HTTP port 80 was knocked by %IP%"
                   tcpflags    = syn
           EOF
+          systemctl enable knockd.service
+          systemctl restart knockd.service
 
+# We are exporting our LambdaARN and Alarm SNS topic arn incase we want to reuse it from another cloudformation stack in the future.
 Outputs:
   AlarmLambdaArn:
     Condition: CreateAlarmLambda
