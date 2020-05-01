@@ -6,7 +6,15 @@ The only problem i find with terraform is that it is not AWS native, managing di
 
 Using cloudformation is tidious and writing / debugging it is a pain and the error message you get can be a bit confusing, documentation is no where near as good as terraform AWS module. 
 
-With that said, when you get the hang of it, deploying and rolling back works beautifully and the cloud experience is really complete because you are managing and doing everything inside AWS ecosystem.
+With that said, when you get the hang of it, deploying and rolling back works beautifully and the cloud experience is really complehiste because you are managing and doing everything inside AWS ecosystem.
+
+This stack is still an experiment and the teplate is hosted in this public s3 bucket:
+
+https://cfsec.s3.amazonaws.com/template/cfsec.cform
+
+along with packaged lambda function here
+
+https://cfsec.s3.amazonaws.com/assets/snstoslack.zip
 
 
 ### CFSEC
@@ -21,3 +29,7 @@ CFSEC, when fully deployed contains the following features (more to be added whe
  Here is an example of what the slack alert looks like :) 
 
  ![image](/images/cfsec.png)
+
+ Please ignore the ugly `build.sh` script i put together to make development quicker/easier.
+
+ Working with massive Yaml file can be tricky, i highly recommend using vscode extension called fold-plus ;)
